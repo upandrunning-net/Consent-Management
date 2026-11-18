@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<!-- NewCo admin portal, steps 1 and 2: sign in with MFA, then health, members and the access log.
+<!-- NewCo admin portal: sign in with MFA, then health, clients, members and the access log.
      Two edits needed below: SUPABASE_URL and PUBLISHABLE_KEY. The publishable key is public by design; never put a secret key in this file. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; connect-src https://*.supabase.co; img-src data:; base-uri 'none'; form-action 'none'">
 <title>NewCo admin</title>
@@ -28,6 +28,10 @@ th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--bd);vertical
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}.row>div{flex:1;min-width:150px}.row button{margin:0}
 .qr{width:200px;height:200px;background:#fff;padding:8px;border-radius:8px}
 code{word-break:break-all}
+.chk{display:flex;gap:8px;align-items:center;font-weight:400;margin:4px 0}.chk input{width:auto}
+.note{border-left:4px solid var(--ac);padding:8px 12px;margin:12px 0}
+details{border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin:12px 0}summary{cursor:pointer;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0 14px}
 </style>
 </head>
 <body>
@@ -45,7 +49,7 @@ const el = (tag, props = {}, ...kids) => {
   kids.flat().forEach(k => { if (k != null && k !== false) e.append(k); });
   return e;
 };
-const say = (...kids) => app.replaceChildren(...kids);
+const say = (...kids) => app.replaceChildren(...kids.filter(k => k != null && k !== false));   // an absent panel must not print the word "null"
 const LABEL = { newco_super: 'NewCo super admin', newco_support: 'NewCo support', client_admin: 'Client admin', client_staff: 'Client staff' };
 let sb;
 
@@ -113,7 +117,50 @@ async function api(action, params = {}, body) {
   return res.json().catch(() => ({ ok: false, error: 'server' }));
 }
 
-async function dash() {
+const PURPOSES = [['P1', 'Email marketing', true], ['P4', 'Email newsletter', true], ['P5', 'Promotions', true], ['P2', 'SMS marketing', false], ['P3', 'WhatsApp updates', false]];
+const FIELDS = [['surname', 'Surname'], ['company', 'Company'], ['job_title', 'Job title'], ['phone', 'Phone'], ['whatsapp', 'WhatsApp number'], ['province', 'Province'], ['heard_about', 'How did you hear about us?'], ['message', 'Message']];
+const IDENTITY = [['responsible_party_legal_name', 'Legal name', ''], ['privacy_notice_url', 'Privacy notice address (https://…)', ''], ['request_contact_email', 'Privacy contact email', ''],
+  ['anchor_email', 'Ledger check email', 'ledger@upandrunning.net.za'], ['logo_url', 'Logo address (optional)', ''], ['brand_color', 'Brand colour', '#1F3864']];
+
+const createdNote = r => el('div', { className: 'note' }, el('p', { className: 'ok', textContent: 'Client created.' }),
+  /^https:\/\//.test(r.link || '') ? el('p', {}, 'Form link: ', el('a', { href: r.link, textContent: r.link, target: '_blank', rel: 'noopener' })) : null,
+  el('p', { className: 'mut', textContent: 'Next: create the client’s login in Supabase (Authentication, then Users, with Auto Confirm User ticked), then add it under Members as Client admin.' }));
+
+function identityInputs(values, withName) {
+  const inputs = {};
+  const one = (key, label, type, value) => { inputs[key] = el('input', { type, value: value || '', 'aria-label': label }); return el('div', {}, el('label', { textContent: label }), inputs[key]); };
+  const nodes = [];
+  if (withName) nodes.push(one('client_name', 'Display name', 'text', values.client_name));
+  IDENTITY.forEach(([k, l, d]) => nodes.push(one(k, l, k === 'brand_color' ? 'color' : 'text', values[k] !== undefined ? values[k] : d)));
+  return { inputs, nodes };
+}
+
+function newClientPanel(onDone) {
+  const id = identityInputs({}, false);
+  const slug = el('input', { type: 'text', 'aria-label': 'Short name', autocomplete: 'off' }), name = el('input', { type: 'text', 'aria-label': 'Display name' });
+  const pBoxes = PURPOSES.map(([k, l, on]) => { const b = el('input', { type: 'checkbox', checked: on }); return { k, b, node: el('label', { className: 'chk' }, b, l) }; });
+  const fBoxes = FIELDS.map(([k, l]) => { const b = el('input', { type: 'checkbox' }); return { k, b, node: el('label', { className: 'chk' }, b, l) }; });
+  const out = el('div', { role: 'alert' }), btn = el('button', { type: 'submit', textContent: 'Create client' });
+  const form = el('form', { className: 'wide' },
+    el('div', { className: 'grid' }, el('div', {}, el('label', { textContent: 'Short name (used in the form link, e.g. acme)' }), slug), el('div', {}, el('label', { textContent: 'Display name' }), name), ...id.nodes),
+    el('h3', { textContent: 'Marketing purposes this client will ask for' }), ...pBoxes.map(x => x.node),
+    el('h3', { textContent: 'Extra details to collect (name and email are always collected)' }), el('div', { className: 'grid' }, ...fBoxes.map(x => x.node)),
+    btn, out);
+  form.onsubmit = async ev => {
+    ev.preventDefault(); btn.disabled = true; out.replaceChildren();
+    const settings = { form_url: location.origin + '/' };
+    Object.entries(id.inputs).forEach(([k, i]) => { const v = i.value.trim(); if (v !== '' || k === 'responsible_party_legal_name') settings[k] = v; });
+    const r = await api('client_create', {}, { slug: slug.value.trim(), name: name.value.trim(), settings,
+      purposes: pBoxes.filter(x => x.b.checked).map(x => x.k), fields: fBoxes.filter(x => x.b.checked).map(x => x.k) });
+    if (r.ok) return onDone(createdNote(r));
+    btn.disabled = false;
+    out.append(el('p', { className: 'err', textContent: r.error === 'exists' ? 'That short name is already taken.' : r.error === 'invalid' ? 'Please fix the following:' : r.error === 'forbidden' ? 'You are not allowed to do that.' : 'Something went wrong. Please try again.' }),
+      r.problems && r.problems.length ? el('ul', {}, r.problems.map(p => el('li', { className: 'err', textContent: p }))) : null);
+  };
+  return el('details', {}, el('summary', { textContent: 'New client' }), form);
+}
+
+async function dash(note) {
   say(el('p', { textContent: 'Loading…' }));
   const me = await api('whoami');
   if (!me.ok) {
@@ -125,7 +172,8 @@ async function dash() {
   const newco = ['newco_super', 'newco_support'].includes(me.role);
   const scope = el('select', { 'aria-label': 'Client' }, newco ? el('option', { value: 'all', textContent: 'All clients' }) : null,
     me.tenants.map(t => el('option', { value: t.slug, textContent: t.name })));
-  const healthBox = el('div'), membersBox = el('div'), logBox = el('div'), msg = el('p', { role: 'status' });
+  const healthBox = el('div'), detailsBox = el('div'), membersBox = el('div'), logBox = el('div'), msg = el('p', { role: 'status' });
+  const isSuper = me.role === 'newco_super';
   const flash = (text, bad) => { msg.className = bad ? 'err' : 'ok'; msg.textContent = text; };
   const table = (heads, rows) => el('div', { className: 'wrap' }, el('table', {}, el('thead', {}, el('tr', {}, heads.map(h => el('th', { textContent: h })))), el('tbody', {}, rows)));
 
@@ -173,7 +221,31 @@ async function dash() {
       ...kv('Warnings (last 7 days)', [['Emails that failed to send', n(t.events_7d, 'email_failed')], ['Requests held back by the limits', n(t.events_7d, 'rate_limited')],
         ['Automated submissions dropped', n(t.events_7d, 'bot_dropped')], ['Server errors', n(t.events_7d, 'server_error')]]));
   }
-  const refresh = async () => { await loadHealth(); if (canMembers) await loadMembers(); if (canLog) await loadLog(); };
+  async function loadDetails() {
+    if (scope.value === 'all') return detailsBox.replaceChildren(el('p', { className: 'mut', textContent: 'Choose a client above to see its details.' }));
+    const r = await api('client_get', { tenant: scope.value });
+    if (!r.ok) return detailsBox.replaceChildren(el('p', { className: 'err', textContent: 'You cannot view details for this selection.' }));
+    const c = r.client, s = c.settings, on = list => list.filter(x => x.enabled).map(x => x.purpose || x.label).join(', ') || 'none';
+    const rows = [['Display name', c.name], ['Legal name', s.responsible_party_legal_name], ['Privacy notice', s.privacy_notice_url], ['Privacy contact', s.request_contact_email],
+      ['Form address', s.form_url ? s.form_url + '?t=' + c.slug : ''], ['Ledger check email', s.anchor_email || 'not set'], ['Collects', on(c.fields)], ['Marketing purposes', on(c.purposes)]];
+    const parts = [table(['Item', 'Value'], rows.map(p => el('tr', {}, el('td', { textContent: p[0] }), el('td', { textContent: String(p[1] || '') }))))];
+    if (r.can_edit) {
+      const id = identityInputs({ client_name: c.name, ...s }, true);
+      const save = el('button', { type: 'submit', textContent: 'Save changes' });
+      const form = el('form', { className: 'wide' }, el('div', { className: 'grid' }, ...id.nodes), save);
+      form.onsubmit = async ev => {
+        ev.preventDefault(); save.disabled = true;
+        const settings = {};
+        Object.entries(id.inputs).forEach(([k, i]) => { const v = i.value.trim(); if (v !== '' || k === 'logo_url') settings[k] = v; });
+        const u = await api('client_update', {}, { tenant: scope.value, settings });
+        flash(u.ok ? 'Saved.' : u.problems && u.problems.length ? u.problems.join(' ') : 'Something went wrong. Please try again.', !u.ok);
+        save.disabled = false; if (u.ok) loadDetails();
+      };
+      parts.push(el('details', {}, el('summary', { textContent: 'Edit details' }), form));
+    }
+    detailsBox.replaceChildren(...parts);
+  }
+  const refresh = async () => { await loadHealth(); await loadDetails(); if (canMembers) await loadMembers(); if (canLog) await loadLog(); };
   async function remove(m) {
     if (!window.confirm('Remove ' + m.email + ' (' + (LABEL[m.role] || m.role) + ')?')) return;
     const r = await api('member_remove', {}, { id: m.id });
@@ -207,7 +279,10 @@ async function dash() {
       el('p', { className: 'mut', textContent: 'Signed in as ' + me.email + ' · ' + (LABEL[me.role] || me.role) })),
       el('button', { type: 'button', className: 'plain', textContent: 'Sign out', onclick: signOut })),
     el('label', { textContent: 'Client' }), scope, msg,
+    note || null,
     el('h2', { textContent: 'Health' }), healthBox,
+    el('h2', { textContent: 'Client details' }), detailsBox,
+    isSuper ? newClientPanel(n => dash(n)) : null,
     canMembers ? el('h2', { textContent: 'Members' }) : null, canMembers ? membersBox : null, canMembers ? addForm : null,
     canLog ? el('h2', { textContent: 'Access log' }) : null, canLog ? logBox : null,
     el('p', { className: 'mut', textContent: 'Everything you do here is recorded in the access log, including refused attempts.' }));
