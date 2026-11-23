@@ -39,7 +39,7 @@ details{border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin:12p
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script>
 const SUPABASE_URL = 'https://huirphsvtugedvcqjdlp.supabase.co';          // https://<project-ref>.supabase.co
-const PUBLISHABLE_KEY = 'sb_publishable_t0xOUx__TzGIozt0YQ5A3A_ZCrossPC';     // your project's publishable key (public by design)
+const PUBLISHABLE_KEY = 'Psb_publishable_t0xOUx__TzGIozt0YQ5A3A_ZCrossPC';     // your project's publishable key (public by design)
 const ADMIN_API = SUPABASE_URL + '/functions/v1/admin';
 
 const app = document.getElementById('app');
@@ -52,14 +52,17 @@ const el = (tag, props = {}, ...kids) => {
 const say = (...kids) => app.replaceChildren(...kids.filter(k => k != null && k !== false));   // an absent panel must not print the word "null"
 const LABEL = { newco_super: 'NewCo super admin', newco_support: 'NewCo support', client_admin: 'Client admin', client_staff: 'Client staff' };
 let sb;
+const RECOVERY_HASH = location.hash || '';      // read before Supabase's library clears it: tells us the page was opened from a reset email
+let recoveryShown = false;
 
-function viewLogin(note) {
+function viewLogin(note, ok) {
   const email = el('input', { type: 'email', autocomplete: 'username', required: true });
   const pw = el('input', { type: 'password', autocomplete: 'current-password', required: true });
-  const msg = el('p', { className: 'err', role: 'alert', textContent: note || '' });
+  const msg = el('p', { className: ok ? 'ok' : 'err', role: 'alert', textContent: note || '' });
   const btn = el('button', { type: 'submit', textContent: 'Sign in' });
   const form = el('form', {}, el('h1', { textContent: 'NewCo admin' }), el('p', { className: 'mut', textContent: 'Everything you do here is recorded.' }),
-    el('label', { textContent: 'Email' }), email, el('label', { textContent: 'Password' }), pw, btn, msg);
+    el('label', { textContent: 'Email' }), email, el('label', { textContent: 'Password' }), pw, btn, msg,
+    el('button', { type: 'button', className: 'plain', textContent: 'Forgot your password?', onclick: () => viewForgot() }));
   form.onsubmit = async ev => {
     ev.preventDefault(); btn.disabled = true; msg.textContent = '';
     const { error } = await sb.auth.signInWithPassword({ email: email.value.trim(), password: pw.value });
@@ -78,12 +81,12 @@ async function afterAuth() {
   return factor ? viewCode(factor.id, false) : viewEnroll();
 }
 
-function viewCode(factorId, enrolling, qr, secret) {
+function viewCode(factorId, enrolling, qr, secret, next, title, blurb) {
   const code = el('input', { type: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', maxLength: 6, required: true });
   const msg = el('p', { className: 'err', role: 'alert' });
   const btn = el('button', { type: 'submit', textContent: 'Verify' });
-  const form = el('form', {}, el('h1', { textContent: enrolling ? 'Set up your authenticator app' : 'Enter your code' }),
-    enrolling ? el('p', { textContent: 'Scan this with an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password), then type the 6-digit code it shows.' }) : el('p', { textContent: 'Open your authenticator app and type the 6-digit code for NewCo admin.' }),
+  const form = el('form', {}, el('h1', { textContent: title || (enrolling ? 'Set up your authenticator app' : 'Enter your code') }),
+    enrolling ? el('p', { textContent: 'Scan this with an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password), then type the 6-digit code it shows.' }) : el('p', { textContent: blurb || 'Open your authenticator app and type the 6-digit code for NewCo admin.' }),
     enrolling ? el('img', { className: 'qr', src: qr, alt: 'QR code for your authenticator app' }) : null,
     enrolling ? el('p', { className: 'mut' }, 'Cannot scan? Type this key into the app instead: ', el('code', { textContent: secret })) : null,
     el('label', { textContent: '6-digit code' }), code, btn, msg,
@@ -92,7 +95,7 @@ function viewCode(factorId, enrolling, qr, secret) {
     ev.preventDefault(); btn.disabled = true; msg.textContent = '';
     const { error } = await sb.auth.mfa.challengeAndVerify({ factorId, code: code.value.trim() });
     if (error) { msg.textContent = 'That code did not work. Wait for the next one and try again.'; btn.disabled = false; return; }
-    afterAuth();
+    (next || afterAuth)();
   };
   say(form);
 }
@@ -104,6 +107,62 @@ async function viewEnroll() {
   const { data, error } = await sb.auth.mfa.enroll({ factorType: 'totp', friendlyName: 'NewCo admin' });
   if (error) return viewLogin('Could not start MFA setup. Please try again.');
   viewCode(data.id, true, data.totp.qr_code, data.totp.secret);
+}
+
+// ---- password reset (emailed link, then the authenticator code, then a new password) and change password ----
+function viewForgot(note) {
+  const email = el('input', { type: 'email', autocomplete: 'username', required: true });
+  const msg = el('p', { role: 'status', textContent: note || '' }), btn = el('button', { type: 'submit', textContent: 'Email me a reset link' });
+  const form = el('form', {}, el('h1', { textContent: 'Reset your password' }),
+    el('p', { textContent: 'Enter your email. If it has a login, we will send you a link. You will still need your authenticator code to finish.' }),
+    el('label', { textContent: 'Email' }), email, btn, msg, el('button', { type: 'button', className: 'plain', textContent: 'Back to sign in', onclick: () => viewLogin() }));
+  form.onsubmit = async ev => {
+    ev.preventDefault(); btn.disabled = true; msg.className = '';
+    const { error } = await sb.auth.resetPasswordForEmail(email.value.trim(), { redirectTo: location.origin + location.pathname });
+    if (error && (error.status === 429 || /rate|too many|seconds/i.test(error.message || ''))) { msg.className = 'err'; msg.textContent = 'Please wait a few minutes before asking again.'; btn.disabled = false; return; }
+    msg.className = 'ok';   // the same answer whether or not the address has a login
+    msg.textContent = 'If that address has a login, we have emailed a reset link. Check your spam folder too. The link works once and expires. Did not arrive? Reload this page to try again.';
+  };
+  say(form);
+}
+
+async function viewRecovery() {
+  if (recoveryShown) return; recoveryShown = true;
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* tokens must not stay in the address bar */ }
+  const { data: aal } = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
+  const { data: f } = await sb.auth.mfa.listFactors();
+  const factor = f && f.totp && f.totp[0];
+  if (factor && !(aal && aal.currentLevel === 'aal2')) {       // a reset must not bypass the authenticator
+    return viewCode(factor.id, false, null, null, () => viewNewPassword('reset'), 'Confirm it is you', 'Enter the 6-digit code from your authenticator app to continue with the password change.');
+  }
+  viewNewPassword('reset');
+}
+
+function viewNewPassword(mode) {
+  const pw1 = el('input', { type: 'password', autocomplete: 'new-password', required: true }), pw2 = el('input', { type: 'password', autocomplete: 'new-password', required: true });
+  const msg = el('p', { className: 'err', role: 'alert' }), btn = el('button', { type: 'submit', textContent: 'Save new password' });
+  const form = el('form', {}, el('h1', { textContent: mode === 'change' ? 'Change your password' : 'Choose a new password' }),
+    el('p', { className: 'mut', textContent: 'Use at least 12 characters. A few random words works well. Do not reuse a password from anywhere else.' }),
+    el('label', { textContent: 'New password' }), pw1, el('label', { textContent: 'Repeat it' }), pw2, btn, msg,
+    mode === 'change' ? el('button', { type: 'button', className: 'plain', textContent: 'Cancel', onclick: () => dash() }) : null);
+  form.onsubmit = async ev => {
+    ev.preventDefault(); msg.textContent = '';
+    if (pw1.value.length < 12) { msg.textContent = 'Please use at least 12 characters.'; return; }
+    if (pw1.value !== pw2.value) { msg.textContent = 'The two passwords do not match.'; return; }
+    btn.disabled = true;
+    const { error } = await sb.auth.updateUser({ password: pw1.value });
+    if (error) {
+      const m = error.message || '';
+      msg.textContent = /same|different/i.test(m) ? 'Choose a password you have not used before.'
+        : /aal2|reauth/i.test(m) ? 'For security, sign in again with your authenticator code, then use Change password.'
+        : 'That password was not accepted. Use at least 12 characters and avoid common passwords.';
+      btn.disabled = false; return;
+    }
+    if (mode === 'change') return dash(el('div', { className: 'note' }, el('p', { className: 'ok', textContent: 'Password changed.' })));
+    await sb.auth.signOut();                                   // every other session ends too, then a fresh sign-in with the new password
+    viewLogin('Password changed. Please sign in with your new password.', true);
+  };
+  say(form);
 }
 
 async function signOut() { await sb.auth.signOut(); viewLogin(); }
@@ -182,7 +241,8 @@ async function dash(note) {
     if (!r.ok) return membersBox.replaceChildren(el('p', { className: 'err', textContent: 'You cannot view members for this selection.' }));
     membersBox.replaceChildren(table(['Email', 'Role', 'Client', ''], r.rows.map(m => el('tr', {},
       el('td', { textContent: m.email }), el('td', { textContent: LABEL[m.role] || m.role }), el('td', { textContent: m.tenant || 'All clients' }),
-      el('td', {}, el('button', { type: 'button', className: 'plain', textContent: 'Remove', onclick: () => remove(m) }))))));
+      el('td', {}, el('button', { type: 'button', className: 'plain', textContent: 'Reset authenticator', onclick: () => resetMfa(m) }), ' ',
+        el('button', { type: 'button', className: 'plain', textContent: 'Remove', onclick: () => remove(m) }))))));
   }
   async function loadLog() {
     const r = await api('access_log', { tenant: scope.value, limit: 100 });
@@ -246,6 +306,11 @@ async function dash(note) {
     detailsBox.replaceChildren(...parts);
   }
   const refresh = async () => { await loadHealth(); await loadDetails(); if (canMembers) await loadMembers(); if (canLog) await loadLog(); };
+  async function resetMfa(m) {
+    if (!window.confirm('Reset the authenticator for ' + m.email + '? They will be asked to set up a new one the next time they sign in.')) return;
+    const r = await api('member_reset_mfa', {}, { id: m.id });
+    flash(r.ok ? 'Authenticator reset. They will set up a new one at their next sign-in.' : 'You are not allowed to do that.', !r.ok);
+  }
   async function remove(m) {
     if (!window.confirm('Remove ' + m.email + ' (' + (LABEL[m.role] || m.role) + ')?')) return;
     const r = await api('member_remove', {}, { id: m.id });
@@ -277,7 +342,8 @@ async function dash(note) {
 
   say(el('div', { className: 'top' }, el('div', {}, el('h1', { textContent: 'NewCo admin' }),
       el('p', { className: 'mut', textContent: 'Signed in as ' + me.email + ' · ' + (LABEL[me.role] || me.role) })),
-      el('button', { type: 'button', className: 'plain', textContent: 'Sign out', onclick: signOut })),
+      el('div', {}, el('button', { type: 'button', className: 'plain', textContent: 'Change password', onclick: () => viewNewPassword('change') }), ' ',
+        el('button', { type: 'button', className: 'plain', textContent: 'Sign out', onclick: signOut }))),
     el('label', { textContent: 'Client' }), scope, msg,
     note || null,
     el('h2', { textContent: 'Health' }), healthBox,
@@ -293,7 +359,13 @@ async function dash(note) {
 (async () => {
   if (/PASTE_/.test(SUPABASE_URL + PUBLISHABLE_KEY)) return say(el('p', { textContent: 'Set SUPABASE_URL and PUBLISHABLE_KEY at the top of this file.' }));
   sb = window.supabase.createClient(SUPABASE_URL, PUBLISHABLE_KEY, { auth: { storage: window.sessionStorage, persistSession: true, autoRefreshToken: true } });   // session ends when the tab closes
+  sb.auth.onAuthStateChange(event => { if (event === 'PASSWORD_RECOVERY') viewRecovery(); });
+  if (/error_code=|error_description=/.test(RECOVERY_HASH)) {    // an expired or already-used reset link
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
+    return viewForgot('That link has expired or was already used. Enter your email to get a new one.');
+  }
   const { data } = await sb.auth.getSession();
+  if (/type=recovery/.test(RECOVERY_HASH)) { if (data && data.session) viewRecovery(); return; }   // otherwise the library's event shows the screen
   if (data && data.session) afterAuth(); else viewLogin();
 })();
 </script>
